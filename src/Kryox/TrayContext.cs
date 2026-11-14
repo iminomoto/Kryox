@@ -40,6 +40,17 @@ public sealed class TrayContext : ApplicationContext
     /// <summary>Last value pushed to the zen screen (-1 = force a fresh send).</summary>
     private int _zenTemp = -1;
 
+    /// <summary>Last time a zen packet went out (drives the keep-alive heartbeat).</summary>
+    private DateTime _lastZenPacket = DateTime.MinValue;
+
+    /// <summary>
+    /// Keep-alive period for the zen screen: live-observed, a zen screen left
+    /// silent for minutes makes the firmware reboot the panel (DeepCool boot
+    /// animation). Re-sending command 03 with the same value every ~30 s keeps
+    /// it fed — same-value rewrites are in-place and invisible.
+    /// </summary>
+    private const int ZenHeartbeatMs = 30_000;
+
     private Thread? _loop;
     private volatile bool _running = true;
 
@@ -73,6 +84,7 @@ public sealed class TrayContext : ApplicationContext
                 int t = Math.Max(0, (int)Math.Round(_sensors.CpuTempC));
                 _zenTemp = t;
                 _display.SendZenIdle(t);          // instant: ZEN <temp>°
+                _lastZenPacket = DateTime.Now;
                 try { _dash?.Dispose(); } catch { }
                 _dash = null;
             }
@@ -128,6 +140,8 @@ public sealed class TrayContext : ApplicationContext
                     // zen mode: the firmware renders its own screen — just keep
                     // the displayed temp current, no frames, no dashboard
                     SetTrayText("zen mode");
+
+                    // sensor refresh (5 s): resend when the displayed degree changes
                     if ((DateTime.Now - lastSample).TotalMilliseconds >= 5000)
                     {
                         _sensors.Sample();
@@ -137,8 +151,19 @@ public sealed class TrayContext : ApplicationContext
                         {
                             _zenTemp = t;
                             _display.SendZenIdle(t);
+                            _lastZenPacket = DateTime.Now;
                         }
                     }
+
+                    // keep-alive heartbeat: silence makes the firmware reboot the
+                    // panel (boot animation), so re-affirm the current value
+                    // every ~30 s regardless of change
+                    if (_zenTemp >= 0 && (DateTime.Now - _lastZenPacket).TotalMilliseconds >= ZenHeartbeatMs)
+                    {
+                        _display.SendZenIdle(_zenTemp);
+                        _lastZenPacket = DateTime.Now;
+                    }
+
                     Thread.Sleep(500);   // no frame pacing here — keep the loop quiet
                 }
                 else
