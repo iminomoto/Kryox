@@ -1,7 +1,7 @@
 ﻿# Kryox — dead-simple LM360 display monitor
 
-A small native tray app that replaces DeepCreative (420 MB installer, heavy GUI)
-with just what a DeepCool **LM360** cooler display actually needs:
+A small tray app (C#/.NET 8) that replaces DeepCreative (420 MB installer, heavy
+GUI) with just what a DeepCool **LM360** cooler display actually needs:
 
 * CPU temperature  (LibreHardwareMonitor, ring-0 kernel driver included)
 * GPU temperature  (NVIDIA/AMD/Intel — NVIDIA via NVAPI, no admin needed)
@@ -9,19 +9,29 @@ with just what a DeepCool **LM360** cooler display actually needs:
 * 320×240 monitor page streamed live to the cooler screen at **~10 fps** over
   **WinUSB** bulk writes (no libusb — the in-box driver is enough)
 
-No web renderer, no wallpaper engine, no overlay 3D engine — just the sensor
-loop and the USB stream. The goal: **low CPU, small memory footprint**.
+No wallpaper engine, no overlay 3D engine, no giant GUI suite — the whole
+surface is one hand-authored **1-bit dashboard** (pure black/white, dithered
+rings, comet marker, animated wave tank for RAM), rendered pixel-perfect in an
+offscreen WebView2 at exactly 320×240 and pushed to the panel. A static 1-bit
+splash (bordered card, white K centered) covers the first ten seconds until
+the dashboard is healthy — and would stay on the panel if WebView2 were ever
+unavailable — so it never goes blank. The goal: **low CPU, small memory
+footprint**.
 
-The look is a single **1-bit dashboard** (pure black/white, dithered rings,
-comet marker, animated wave tank for RAM) — an HTML design authored in this
-project, rendered pixel-perfect in an offscreen WebView2 at exactly 320×240 and
-pushed to the panel. A static 1-bit splash (bordered card, white K centered)
-covers the first ten seconds until the dashboard is healthy — and would stay
-on the panel if WebView2 were ever unavailable — so it never goes blank.
+![The 1-bit dashboard, exactly as pushed to the panel](docs/dashboard.png)
+*Panel-exact render (320×240, shown at ×3).*
 
 ## Install
 
-**One file is all you need** — a single 28 MB `Kryox.exe` (it is on the Desktop).
+**One file is all you need** — a single ~28 MB `Kryox.exe`, downloadable from
+the [Releases](https://github.com/iminomoto/Kryox/releases) page.
+
+### Requirements
+
+* Windows 10 (build 19041 or later) or Windows 11, 64-bit
+* [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/en-us/download/dotnet/8.0) (x64) — the exe is framework-dependent
+* WebView2 Runtime — preinstalled on Windows 11 and up-to-date Windows 10; the evergreen installer is offered automatically if missing
+* the DeepCool LM360 panel (internal USB header)
 
 Double-click it anywhere:
 
@@ -30,7 +40,7 @@ Double-click it anywhere:
 3. registers the `Kryox` scheduled task (ONLOGON, highest privileges), so it
    starts silently in the tray on every boot,
 4. launches the installed copy and exits — from then on the app runs from
-   `%LOCALAPPDATA%\Kryox\app`, never touching your desktop or the repo.
+   `%LOCALAPPDATA%\Kryox\app`, never touching the folder you launched it from.
 
 Running the desktop file again later is a no-op while the app is already
 running, and an instant self-update when it is not.
@@ -38,12 +48,12 @@ running, and an instant self-update when it is not.
 **Quit DeepCreative first** if you use it: only one app can hold the display's
 WinUSB interface, and DeepCreative streams your panels every ~300 ms on its own.
 
-Tray icon options: zen mode (the firmware zen screen shows the live CPU temp;
-while it is on the dashboard's browser is unloaded — near-zero CPU/RAM),
-brightness ±, "Start with Windows" (silent scheduled task), and Exit. While
-running, the panel is continuously refreshed; leaving one final
-frame is not possible — the panel blanks ~½ s after the stream stops (firmware
-watchdog).
+Tray icon options: zen mode (the firmware's own zen screen shows the live CPU
+temp; while it is on, the dashboard's browser is unloaded — near-zero CPU/RAM),
+brightness ± (one step per click — the firmware debounces), "Start with
+Windows" (silent scheduled task), and Exit. While running, the panel is
+continuously refreshed; leaving one final frame is not possible — the panel
+blanks ~½ s after the stream stops (firmware watchdog).
 
 To uninstall: tray → Exit, then `schtasks /Delete /TN Kryox /F` and delete the
 `%LOCALAPPDATA%\Kryox` folder.
@@ -95,7 +105,7 @@ dotnet build src\KryoxTest\KryoxTest.csproj -c Release
 ```
 
 Streams the same monitor page from the console for 40 s (WYSIWYG proof of the
-middleware stack without the tray UI). Log and preview images land in
+rendering stack without the tray UI). Log and preview images land in
 `%TEMP%\Kryox` — nothing is written into the repo.
 
 ## Credits

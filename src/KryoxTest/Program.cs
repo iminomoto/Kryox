@@ -9,6 +9,7 @@ using System.Threading;
 //   `KryoxTest`           → USB stream regression: pushes the static 1-bit splash for 40 s
 //   `KryoxTest web`       → 1-bit HTML dashboard pipeline test (45 s)
 //   `KryoxTest png`       → saves a 3x preview PNG of the splash (no device needed)
+//   `KryoxTest pngdash`   → saves a 3x preview PNG of the dashboard (no device needed)
 //   `KryoxTest zenprobe`  → zen idle-screen value probe (leaves the panel in zen)
 
 var pngMode = args.Any(a => string.Equals(a, "png", StringComparison.OrdinalIgnoreCase));
@@ -26,6 +27,23 @@ void Log(string s)
     Console.WriteLine(s);
 }
 
+/// <summary>RGB24 320×240 buffer → 24bpp bitmap (row-copy; 1-bit white/black is order-agnostic).</summary>
+static System.Drawing.Bitmap BufferToBitmap(byte[] rgb24)
+{
+    int w = SplashFrame.Width, h = SplashFrame.Height, stride = w * 3;
+    var bmp = new System.Drawing.Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+    var bd = bmp.LockBits(new System.Drawing.Rectangle(0, 0, w, h),
+        System.Drawing.Imaging.ImageLockMode.WriteOnly,
+        System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+    try
+    {
+        for (int y = 0; y < h; y++)
+            System.Runtime.InteropServices.Marshal.Copy(rgb24, y * stride, bd.Scan0 + y * bd.Stride, stride);
+    }
+    finally { bmp.UnlockBits(bd); }
+    return bmp;
+}
+
 try
 {
     Log($"[{DateTime.Now:HH:mm:ss}] Kryox smoke test v8{(pngMode ? " (png preview)" : webMode ? " (web mode)" : "")}");
@@ -36,6 +54,46 @@ try
         using var pb = SplashFrame.PreviewBitmap();
         pb.Save(path, System.Drawing.Imaging.ImageFormat.Png);
         Log($"saved {path}");
+        return;
+    }
+
+    var pngDash = args.Any(a => string.Equals(a, "pngdash", StringComparison.OrdinalIgnoreCase));
+    if (pngDash)
+    {
+        Log("--- MODE: dashboard preview png (no device needed) ---");
+        using var dash = new WebDashboard();
+
+        // the dashboard's own mock loop is gated, so this feed is what shows
+        dash.Push(52.5, 44.0, 38.2, 12.4, 32.0);
+
+        var tEndPng = DateTime.Now.AddSeconds(20);
+        while (DateTime.Now < tEndPng && !(dash.Healthy && dash.LatestFrame is not null))
+            Thread.Sleep(250);
+        if (dash.LatestFrame is null)
+        {
+            Log($"dashboard never produced a frame (status: {dash.Status})");
+            return;
+        }
+
+        Thread.Sleep(2500);   // dwell: let the animations reach a representative state
+        dash.Push(52.5, 44.0, 38.2, 12.4, 32.0);
+        Thread.Sleep(500);
+        var frame = dash.LatestFrame!;
+
+        // RGB24 320×240 → panel-exact preview, scale ×3 nearest-neighbor
+        using var src = BufferToBitmap(frame);
+        var big = new System.Drawing.Bitmap(SplashFrame.Width * 3, SplashFrame.Height * 3,
+            System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+        using (var g2 = System.Drawing.Graphics.FromImage(big))
+        {
+            g2.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+            g2.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+            g2.DrawImage(src, new Rectangle(0, 0, big.Width, big.Height));
+        }
+        var dashPng = Path.Combine(artDir, "preview-dashboard.png");
+        big.Save(dashPng, System.Drawing.Imaging.ImageFormat.Png);
+        Log($"saved {dashPng} (status: {dash.Status}, healthy: {dash.Healthy})");
+        big.Dispose();
         return;
     }
 
