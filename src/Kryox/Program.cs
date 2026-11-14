@@ -38,6 +38,14 @@ internal static class Program
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 
+        // A UI-thread exception must never show the fatal error dialog (one
+        // accidental "Quit" click ends the whole app) — log it and keep going;
+        // the stream loop is self-healing. Anything that ever escapes another
+        // thread is logged too, so no death can be silent again.
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, e) => CrashLog("ui", e.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => CrashLog("domain", e.ExceptionObject as Exception);
+
         // one instance only
         _singleInstance = new Mutex(true, "Kryox-LM360", out bool first);
         if (!first) return;
@@ -113,6 +121,23 @@ internal static class Program
             File.AppendAllText(Path.Combine(dir, "install.log"), $"[{DateTime.Now:HH:mm:ss}] {s}\n");
         }
         catch { /* never let logging break the install */ }
+    }
+
+    /// <summary>
+    /// Last-gasp exception trace: appends to %TEMP%\Kryox\crash.log. The app's
+    /// one silent death taught us this file is the only voice it has when
+    /// something goes wrong.
+    /// </summary>
+    private static void CrashLog(string kind, Exception? ex)
+    {
+        try
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "Kryox");
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(Path.Combine(dir, "crash.log"),
+                $"[{DateTime.Now:HH:mm:ss}] {kind}: {ex}\n");
+        }
+        catch { /* never let logging kill the app */ }
     }
 
     private static bool SamePath(string? a, string b)

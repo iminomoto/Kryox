@@ -37,6 +37,9 @@ public sealed class TrayContext : ApplicationContext
 
     private volatile bool _zen;
 
+    /// <summary>Zen state as last applied by the stream thread (stream-thread-only).</summary>
+    private bool _zenApplied;
+
     private Thread? _loop;
     private volatile bool _running = true;
 
@@ -56,25 +59,12 @@ public sealed class TrayContext : ApplicationContext
 
         _btnZen = (ToolStripMenuItem)menu.Items.Add("Zen mode", image: null, (_, _) =>
         {
-            if (!_display.IsConnected) return;
-            // Zen mode = the firmware's own zen screen showing the live CPU temp
-            // (command 03, live-verified). The panel renders it itself, so while
-            // it is on the dashboard's whole WebView2 browser is unloaded and
-            // the frame pipeline stops — the app idles at ~zero CPU and a
-            // fraction of its RAM. Frames (and a fresh dashboard) come back the
-            // moment zen is switched off; the splash covers the browser warmup.
+            // Only flip the flag here. The stream thread owns the display,
+            // sensors and dashboard, and applies the transition on its own
+            // thread within ~0.5 s. (v0.2.7: touching shared state from menu
+            // clicks raced the stream thread and could take the app down via
+            // the WinForms error dialog.)
             _zen = !_zen;
-            if (_zen)
-            {
-                _sensors.Sample();
-                _display.SendZenIdle(Math.Max(0, (int)Math.Round(_sensors.CpuTempC)));   // instant: ZEN <temp>°
-                try { _dash?.Dispose(); } catch { }
-                _dash = null;
-            }
-            else
-            {
-                _dash = new WebDashboard();
-            }
             UpdateZenUi();
         });
 
@@ -118,45 +108,73 @@ public sealed class TrayContext : ApplicationContext
                 {
                     SetTrayText("LM360 not found");
                 }
-                else if (_zen)
-                {
-                    // zen mode: the firmware renders its own screen; the browser
-                    // is gone and no frames flow. The zen screen must be fed
-                    // fast: live-verified, ~30 s cadence lets it time out and
-                    // the panel reboots (boot animation), while a 1 s feed of
-                    // the live value holds clean — so sample + push every 1 s
-                    // (same-value rewrites are in-place and invisible).
-                    SetTrayText("zen mode");
-
-                    if ((DateTime.Now - lastSample).TotalMilliseconds >= 1000)
-                    {
-                        _sensors.Sample();
-                        lastSample = DateTime.Now;
-                        _display.SendZenIdle(Math.Max(0, (int)Math.Round(_sensors.CpuTempC)));
-                    }
-
-                    Thread.Sleep(500);   // no frame pacing here — keep the loop quiet
-                }
                 else
                 {
-                    bool inBeat = DateTime.UtcNow - _boot < SplashHold;
-
-                    var dash = _dash;
-                    SetTrayText(dash is { Healthy: true } ? "1-bit dashboard" : "starting");
-
-                    // sensor refresh ~1 Hz
-                    if ((DateTime.Now - lastSample).TotalMilliseconds >= 1000)
+                    // Zen transitions happen HERE, on the stream thread — the
+                    // UI thread only flips the _zen flag. (v0.2.7: touching
+                    // the sensors/display/dashboard from menu clicks raced
+                    // this thread and could take the app down.)
+                    if (_zen != _zenApplied)
                     {
-                        _sensors.Sample();
-                        lastSample = DateTime.Now;
-                        dash?.Push(_sensors.CpuTempC, _sensors.GpuTempC,
-                                   _sensors.RamLoadPct, _sensors.RamUsedGB, _sensors.RamTotalGB);
+                        _zenApplied = _zen;
+                        if (_zen)
+                        {
+                            // entering zen: instant ZEN <temp>°, then the
+                            // dashboard's whole WebView2 browser is unloaded —
+                            // ~zero CPU and a fraction of RAM while it lasts
+                            _sensors.Sample();
+                            lastSample = DateTime.Now;
+                            _display.SendZenIdle(Math.Max(0, (int)Math.Round(_sensors.CpuTempC)));
+                            try { _dash?.Dispose(); } catch { }
+                            _dash = null;
+                        }
+                        // leaving zen: the dashboard is recreated below
                     }
 
-                    // splash: hold the centered K for 10 s, then dashboard frames.
-                    // The splash also covers warmup/failure, so the panel never blanks.
-                    var frame = !inBeat ? dash?.LatestFrame : null;
-                    _display.SendRgbFrame(frame ?? SplashFrame.Frame);
+                    if (_zen)
+                    {
+                        // zen mode: the firmware renders its own screen; the
+                        // browser is gone and no frames flow. The zen screen
+                        // must be fed fast: live-verified, ~30 s cadence lets
+                        // it time out and the panel reboots (boot animation),
+                        // while a 1 s feed of the live value holds clean — so
+                        // sample + push every 1 s (same-value rewrites are
+                        // in-place and invisible).
+                        SetTrayText("zen mode");
+
+                        if ((DateTime.Now - lastSample).TotalMilliseconds >= 1000)
+                        {
+                            _sensors.Sample();
+                            lastSample = DateTime.Now;
+                            _display.SendZenIdle(Math.Max(0, (int)Math.Round(_sensors.CpuTempC)));
+                        }
+
+                        Thread.Sleep(500);   // no frame pacing here — keep the loop quiet
+                    }
+                    else
+                    {
+                        // fresh dashboard after zen (or a failed earlier boot)
+                        if (_dash is null) _dash = new WebDashboard();
+
+                        bool inBeat = DateTime.UtcNow - _boot < SplashHold;
+
+                        var dash = _dash;
+                        SetTrayText(dash is { Healthy: true } ? "1-bit dashboard" : "starting");
+
+                        // sensor refresh ~1 Hz
+                        if ((DateTime.Now - lastSample).TotalMilliseconds >= 1000)
+                        {
+                            _sensors.Sample();
+                            lastSample = DateTime.Now;
+                            dash?.Push(_sensors.CpuTempC, _sensors.GpuTempC,
+                                       _sensors.RamLoadPct, _sensors.RamUsedGB, _sensors.RamTotalGB);
+                        }
+
+                        // splash: hold the centered K for 10 s, then dashboard frames.
+                        // The splash also covers warmup/failure, so the panel never blanks.
+                        var frame = !inBeat ? dash?.LatestFrame : null;
+                        _display.SendRgbFrame(frame ?? SplashFrame.Frame);
+                    }
                 }
             }
             catch
