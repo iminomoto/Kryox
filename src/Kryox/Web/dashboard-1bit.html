@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=320, height=240, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>System Status 1-bit</title>
+<style>
+  /* =====================================================================
+     1-BIT DESIGN RULES
+     - Only #000 and #fff. No grey, opacity, gradients, blur or shadows.
+     - Depth comes from dithering (2x2 checkerboard = "50% grey").
+     - Alerts come from shape and inversion, not colour:
+         normal  -> 1px single border
+         warning -> 3px double border
+         critical-> 3px solid border + card inverted (steady, no flashing)
+     ===================================================================== */
+  :root {
+    --k: #000;
+    --w: #fff;
+    --ease: cubic-bezier(.22, 1, .36, 1);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%;
+    background: var(--k);
+    overflow: hidden;
+    cursor: none;
+    user-select: none; -webkit-user-select: none;
+    -webkit-font-smoothing: none; font-smooth: never; text-rendering: optimizeSpeed;
+  }
+  body {
+    display: grid; place-items: center;
+    font-family: "Inter Tight", "SF Pro Display", "Segoe UI Variable Display", "Segoe UI",
+                 system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    color: var(--w);
+  }
+  /* Desktop preview only: when the window is bigger than the panel, show the panel edge. */
+  @media (min-width: 321px), (min-height: 241px) { body { background: #262626; } }
+
+  /* ---------- Locked 320x240 canvas ---------- */
+  #screen {
+    position: relative;
+    width: 320px; height: 240px;
+    flex: none; overflow: hidden;
+    padding: 8px;
+    display: grid;
+    grid-template-rows: 132px 84px;
+    gap: 8px;
+    background: var(--k);
+  }
+  /* Hard 1-bit pass: every pixel is forced to pure black or pure white. */
+  #screen.onebit { filter: url(#onebit); }
+
+  svg { shape-rendering: crispEdges; }
+
+  /* ---------- Header ---------- */  /* (removed: top row freed for the gauges) */
+
+  /* ---------- Cards ---------- */
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .card {
+    position: relative; isolation: isolate;
+    border-radius: 16px;
+    background: var(--k);
+    border: 1px solid var(--w);
+  }
+  .card[data-level="warn"] { border: 3px double var(--w); }
+  .card[data-level="crit"] {
+    border: 3px solid var(--w);
+    filter: invert(1);            /* steady inversion — the alarm, without the pump */
+  }
+
+  /* ---------- Ring cards ---------- */
+  .ring-card { display: grid; place-items: center; }
+  .ring { width: 128px; height: 128px; overflow: visible; }   /* 1 SVG unit = 1 pixel */
+  .ring .track { fill: none; stroke: url(#dither); stroke-width: 10; }
+  .ring .arc {
+    fill: none; stroke: var(--w); stroke-width: 10; stroke-linecap: butt;
+    stroke-dasharray: 100 100; stroke-dashoffset: 100;       /* pathLength = 100 -> offset = 100 - percent */
+    transform: rotate(-90deg); transform-origin: 64px 64px;
+    transition: stroke-dashoffset 1.1s var(--ease);
+  }
+  .ring .comet { transform-origin: 64px 64px; transition: transform 1.1s var(--ease); }
+  .ring .comet circle {
+    fill: var(--w); stroke: var(--k); stroke-width: 5; paint-order: stroke fill;   /* black halo keeps it visible on the arc */
+  }
+
+  .readout {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 1px;
+  }
+  .lbl { font-size: 12px; font-weight: 800; letter-spacing: .1em; }
+  .val { display: flex; align-items: flex-start; line-height: 1; }
+  .val b { font-size: 40px; font-weight: 800; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+  .val i { font-style: normal; font-size: 14px; font-weight: 800; margin: 5px 0 0 1px; }
+  .ring-card.wide .val b { font-size: 33px; }                 /* 100 degrees and up */
+  .ring-card.wide .val i { font-size: 11px; margin-top: 2px; }
+
+  /* ---------- Memory card: text on the left, water tank on the right ---------- */
+  .ram-card {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 12px 0 16px;
+  }
+  .ram-text { display: flex; flex-direction: column; gap: 3px; }
+  .ram-text .lbl, .ram-text .used { line-height: 1; }
+  .ram-text .pct { display: flex; align-items: baseline; line-height: 1; }
+  .ram-text .pct b { font-size: 44px; font-weight: 800; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+  .ram-text .pct i { font-style: normal; font-size: 20px; font-weight: 800; margin-left: 2px; }
+  .ram-text .used { font-size: 13px; font-weight: 800; font-variant-numeric: tabular-nums; }
+
+  .tank {
+    position: relative; flex: none; overflow: hidden;
+    width: 136px; height: 64px;
+    border: 1px solid var(--w); border-radius: 12px;
+  }
+  .level {
+    position: absolute; left: 0; right: 0; top: 0; height: 100%;
+    transform: translateY(100%);
+    transition: transform 1.4s var(--ease);
+  }
+  .layer { position: absolute; inset: 0; }
+  .layer svg {
+    position: absolute; left: 0; top: -12px; width: 608px; height: 14px; display: block;
+    fill: var(--w);
+    animation: drift 6s steps(152) infinite;                   /* moves in whole 2px steps so edges stay pixel-clean */
+  }
+  .layer .body { position: absolute; left: 0; right: 0; top: 2px; bottom: -4px; background: var(--w); }
+  /* back wave is a thin outline line riding above the solid water */
+  .layer.back { transform: translateY(-7px); }
+  .layer.back svg { fill: none; stroke: var(--w); stroke-width: 2; animation-duration: 9s; animation-direction: reverse; }
+  @keyframes drift { to { transform: translateX(-304px); } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .layer svg, .dot { animation: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Shared SVG defs: dither tile + hard black/white threshold filter -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <pattern id="dither" width="2" height="2" patternUnits="userSpaceOnUse">
+      <rect width="1" height="1" fill="#fff"/><rect x="1" y="1" width="1" height="1" fill="#fff"/>
+    </pattern>
+    <filter id="onebit" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+      <feComponentTransfer>
+        <feFuncR type="discrete" tableValues="0 0 0 0 1 1 1 1 1 1"/>
+        <feFuncG type="discrete" tableValues="0 0 0 0 1 1 1 1 1 1"/>
+        <feFuncB type="discrete" tableValues="0 0 0 0 1 1 1 1 1 1"/>
+      </feComponentTransfer>
+    </filter>
+  </defs>
+</svg>
+
+<main id="screen" class="onebit">
+
+  <section class="row">
+
+    <div class="card ring-card" id="cpu" data-level="ok">
+      <svg class="ring" viewBox="0 0 128 128" aria-hidden="true">
+        <circle class="track" cx="64" cy="64" r="56"/>
+        <circle class="arc" cx="64" cy="64" r="56" pathLength="100"/>
+        <g class="comet"><circle cx="64" cy="8" r="5"/></g>
+      </svg>
+      <div class="readout">
+        <span class="lbl">CPU</span>
+        <span class="val"><b>0</b><i>°C</i></span>
+      </div>
+    </div>
+
+    <div class="card ring-card" id="gpu" data-level="ok">
+      <svg class="ring" viewBox="0 0 128 128" aria-hidden="true">
+        <circle class="track" cx="64" cy="64" r="56"/>
+        <circle class="arc" cx="64" cy="64" r="56" pathLength="100"/>
+        <g class="comet"><circle cx="64" cy="8" r="5"/></g>
+      </svg>
+      <div class="readout">
+        <span class="lbl">GPU</span>
+        <span class="val"><b>0</b><i>°C</i></span>
+      </div>
+    </div>
+
+  </section>
+
+  <section class="card ram-card" id="ram" data-level="ok">
+    <div class="ram-text">
+      <span class="lbl">RAM</span>
+      <span class="pct"><b id="ramPct">0</b><i>%</i></span>
+      <span class="used"><span id="ramUsed">0.0</span> / <span id="ramTotal">16</span> GB</span>
+    </div>
+
+    <div class="tank" id="tank">
+      <div class="level" id="ramLevel">
+        <div class="layer back">
+          <svg viewBox="0 0 608 14" preserveAspectRatio="none"><path d="M0,7 Q19,-1 38,7 T76,7 T114,7 T152,7 T190,7 T228,7 T266,7 T304,7 T342,7 T380,7 T418,7 T456,7 T494,7 T532,7 T570,7 T608,7"/></svg>
+        </div>
+        <div class="layer front">
+          <svg viewBox="0 0 608 14" preserveAspectRatio="none"><path d="M0,7 Q19,-1 38,7 T76,7 T114,7 T152,7 T190,7 T228,7 T266,7 T304,7 T342,7 T380,7 T418,7 T456,7 T494,7 T532,7 T570,7 T608,7 V14 H0 Z"/></svg>
+          <div class="body"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+(() => {
+  /* =====================================================================
+     CONFIG
+     ===================================================================== */
+  const FORCE_1BIT = true;                      // true = hard threshold pass so every pixel is pure black or white
+  const TEMP_MIN = 20, TEMP_MAX = 100;          // ring is empty at 20 C, full at 100 C
+  const LEVELS = {                              // warn = double border, crit = solid border + steady inverted card
+    cpu: { warn: 75,  crit: 85 },
+    gpu: { warn: 78,  crit: 86 },
+    ram: { warn: 101, crit: 88 }                // memory has no warning stage
+  };
+  const TICK_MS = 1500;                         // mock-data interval
+
+  /* =====================================================================
+     RENDERING - call updateMetrics() with real numbers to drive the UI
+     ===================================================================== */
+  const $ = (s, r = document) => r.querySelector(s);
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  $("#screen").classList.toggle("onebit", FORCE_1BIT);
+
+  function tween(el, to, dec = 0, dur = 1000) {
+    const from = parseFloat(el.dataset.v ?? to);
+    const t0 = performance.now();
+    cancelAnimationFrame(el._raf);
+    const step = now => {
+      const k = Math.min(1, (now - t0) / dur);
+      const e = 1 - Math.pow(1 - k, 3);
+      const v = from + (to - from) * e;
+      el.dataset.v = v;
+      el.textContent = v.toFixed(dec);
+      if (k < 1) el._raf = requestAnimationFrame(step);
+    };
+    el._raf = requestAnimationFrame(step);
+  }
+
+  function levelFor(key, value) {
+    const L = LEVELS[key];
+    return value >= L.crit ? "crit" : value >= L.warn ? "warn" : "ok";
+  }
+
+  function setRing(key, temp) {
+    const card = $("#" + key);
+    const pct = clamp((temp - TEMP_MIN) / (TEMP_MAX - TEMP_MIN), 0, 1);
+    $(".arc", card).style.strokeDashoffset = (100 - pct * 100).toFixed(2);
+    $(".comet", card).style.transform = `rotate(${(pct * 360).toFixed(1)}deg)`;
+    card.dataset.level = levelFor(key, temp);
+    card.classList.toggle("wide", temp >= 100);
+    tween($(".val b", card), temp, 0, 1000);
+  }
+
+  function setRam(pct, usedGB, totalGB) {
+    const card = $("#ram");
+    const fill = clamp(pct, 8, 100);                         // keep a sliver of wave visible at very low load
+    const px = Math.round($("#tank").clientHeight * (100 - fill) / 100);   // whole pixels keep the dither aligned
+    $("#ramLevel").style.transform = `translateY(${px}px)`;
+    card.dataset.level = levelFor("ram", pct);
+    tween($("#ramPct"), pct, 0, 1000);
+    tween($("#ramUsed"), usedGB, 1, 1000);
+    $("#ramTotal").textContent = totalGB;
+  }
+
+  window.updateMetrics = function ({ cpu, gpu, ram, ramUsedGB, ramTotalGB = 16 }) {
+    if (cpu != null) setRing("cpu", cpu);
+    if (gpu != null) setRing("gpu", gpu);
+    if (ram != null) setRam(ram, ramUsedGB ?? (ram / 100) * ramTotalGB, ramTotalGB);
+  };
+
+  /* Clock removed with the header row — the freed space goes to the gauges. */
+
+  /* =====================================================================
+     MOCK DATA - replace this block with your real feed
+     (e.g. fetch("/stats").then(r => r.json()).then(updateMetrics))
+     ===================================================================== */
+  const S = { cpu: 48, gpu: 44, ram: 56 };
+  let n = 0;
+
+  const drift = (v, target, k, noise, lo, hi) =>
+    clamp(v + (target - v) * k + (Math.random() - .5) * noise, lo, hi);
+  const burst = (i, period, start, len, size) => (i % period >= start && i % period < start + len ? size : 0);
+
+  function mockTick() {
+    n++;
+    const tCpu = 52 + 10 * Math.sin(n / 7)  + burst(n, 40, 14, 10, 34);   // CPU spikes into critical about every 60 s
+    const tGpu = 46 + 9  * Math.sin(n / 9)  + burst(n, 55, 30, 12, 38);
+    const tRam = 56 + 8  * Math.sin(n / 11) + burst(n, 65, 45, 12, 34);
+
+    S.cpu = drift(S.cpu, tCpu, .35, 4, 28, 99);
+    S.gpu = drift(S.gpu, tGpu, .35, 4, 26, 99);
+    S.ram = drift(S.ram, tRam, .30, 2, 20, 98);
+
+    updateMetrics({
+      cpu: Math.round(S.cpu),
+      gpu: Math.round(S.gpu),
+      ram: Math.round(S.ram),
+      ramUsedGB: +(S.ram / 100 * 16).toFixed(1),
+      ramTotalGB: 16
+    });
+  }
+
+  setTimeout(() => { mockTick(); setInterval(mockTick, TICK_MS); }, 250);
+})();
+</script>
+</body>
+</html>
