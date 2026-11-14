@@ -46,7 +46,7 @@ Hand-verified against two independent captures:
 | **Frame header** (`startFileDownload(1)`) | `00 01 00 58 02 00 2C 01` | byte1 = command `0x01`; `00 58 02 00` = LE `0x00025800` = 153,600 frame bytes; `2C 01` = LE `300` (firmware refresh period, ms) |
 | Brightness up | `06 03 61 00` | |
 | Brightness down | `06 03 1D 00` | |
-| Zen idle screen | `03 <int lo> <int hi> <frac u8>` | panel leaves frame mode and shows its "ZEN" screen displaying the value as °; `03 00 00 00` = the 0° default. **Live-verified:** sending 55.5 → screen showed "55". **Also live-observed:** a zen screen left silent for minutes reboots the panel (boot animation plays, zen re-enters with the last value) — keep it fed by re-sending command 03 with the current value every ~30 s; same-value rewrites are in-place and invisible |
+| Zen idle screen | `03 <int lo> <int hi> <frac u8>` | panel leaves frame mode and shows its "ZEN" screen displaying the value as °; `03 00 00 00` = the 0° default. **Live-verified:** sending 55.5 → screen showed "55"; same-value rewrites update in place, invisibly. **Watchdog characterized:** at 30 s cadence the zen screen reboots the panel within minutes regardless of packet content (same-value and alternating-value heartbeats both failed); a 1 s feed of the live value holds clean across soak runs. Feed it every ~1 s (DeepCreative-style cadence) |
 | changeMode | `07 <mode>` | `FUN_18000bcf0`; mode `0` = "Digital mode" per UI bundle; write + bulk-read 512 B response (10 s timeout), replies "change_mode_success"/"change_mode_fail" |
 | updateArguments (numeric) | `03 <int lo> <int hi> <frac u8>` | `FUN_18000c5b0`; double with 2 decimals, write-only |
 

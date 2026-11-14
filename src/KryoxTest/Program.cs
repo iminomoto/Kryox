@@ -11,6 +11,8 @@ using System.Threading;
 //   `KryoxTest png`       → saves a 3x preview PNG of the splash (no device needed)
 //   `KryoxTest pngdash`   → saves a 3x preview PNG of the dashboard (no device needed)
 //   `KryoxTest zenprobe`  → zen idle-screen value probe (leaves the panel in zen)
+//   `KryoxTest zenlong`   → 12.5-min zen heartbeat experiment (same vs alternating value)
+//   `KryoxTest zenframe`  → 15-min zen + frame-poke experiment (does a frame prevent the zen reboot?)
 
 var pngMode = args.Any(a => string.Equals(a, "png", StringComparison.OrdinalIgnoreCase));
 var webMode = args.Any(a => string.Equals(a, "web", StringComparison.OrdinalIgnoreCase));
@@ -143,6 +145,132 @@ try
         Thread.Sleep(1000);
 
         Log("probe done — panel left in zen for inspection (the app is NOT running)");
+        display.Disconnect();
+        return;
+    }
+
+    var zenLong = args.Any(a => string.Equals(a, "zenlong", StringComparison.OrdinalIgnoreCase));
+    if (zenLong)
+    {
+        Log("--- MODE: zen long-run experiment (~12.5 min, panel shows ZEN 55 the whole time) ---");
+        Log("--- WATCH THE PANEL: note WHEN (which phase) the boot animation plays, if at all ---");
+
+        ushort c3 = Lm360Display.Crc16Xmodem(new byte[] { 0x03, 0x37, 0x00, 0x00 });
+        Log($"crc self-test: zen55={c3:X4}");
+        if (c3 != Lm360Display.Crc16Xmodem(new byte[] { 0x03, 0x37, 0x00, 0x00 }) || c3 == 0)
+        {
+            Log("unexpected zen packet — aborting");
+            display.Disconnect();
+            return;
+        }
+
+        for (int i = 0; i < 20; i++) display.SendRgbFrame(SplashFrame.Frame);   // panel awake
+        display.SendZenIdle(55.5);
+        Log($"[{DateTime.Now:HH:mm:ss}] PHASE A (6 min): SAME-value 55.5 heartbeat every 30 s — screen must show 55");
+
+        var tEndA = DateTime.Now.AddMinutes(6);
+        while (DateTime.Now < tEndA)
+        {
+            Thread.Sleep(30_000);
+            display.SendZenIdle(55.5);
+            Log($"[{DateTime.Now:HH:mm:ss}] A send 55.5");
+        }
+
+        Log($"[{DateTime.Now:HH:mm:ss}] PHASE B (6 min): ALTERNATING 55.5/55.0 every 30 s — screen still shows 55");
+
+        var tEndB = DateTime.Now.AddMinutes(6);
+        bool alt = false;
+        while (DateTime.Now < tEndB)
+        {
+            Thread.Sleep(30_000);
+            alt = !alt;
+            display.SendZenIdle(alt ? 55.0 : 55.5);
+            Log($"[{DateTime.Now:HH:mm:ss}] B send {(alt ? 55.0 : 55.5)}");
+        }
+
+        Log("experiment done — panel left in zen (55.5). Report which phases animated.");
+        display.Disconnect();
+        return;
+    }
+
+    var zenFrame = args.Any(a => string.Equals(a, "zenframe", StringComparison.OrdinalIgnoreCase));
+    if (zenFrame)
+    {
+        Log("--- MODE: zen + frame-poke experiment (~15 min, ZEN 55 with a brief blink every 90 s) ---");
+        Log("--- WATCH: the DeepCool BOOT ANIMATION is the failure; the 90 s blink is the expected poke ---");
+
+        for (int i = 0; i < 20; i++) display.SendRgbFrame(SplashFrame.Frame);   // panel awake
+        display.SendZenIdle(55.5);
+        Log($"[{DateTime.Now:HH:mm:ss}] zen entered (55.5); poking one black frame + re-zen every 90 s");
+
+        var black = new byte[320 * 240 * 3];   // all-black RGB24 frame
+        var tEndPoke = DateTime.Now.AddMinutes(15);
+        int poke = 0;
+        while (DateTime.Now < tEndPoke)
+        {
+            Thread.Sleep(90_000);
+            poke++;
+            display.SendRgbFrame(black);
+            display.SendZenIdle(55.5);
+            Log($"[{DateTime.Now:HH:mm:ss}] poke #{poke}: black frame + re-zen");
+        }
+
+        Log("experiment done — panel left in zen (55.5). Report: any boot animation?");
+        display.Disconnect();
+        return;
+    }
+
+    var zenFast = args.Any(a => string.Equals(a, "zenfast", StringComparison.OrdinalIgnoreCase));
+    if (zenFast)
+    {
+        Log("--- MODE: zen fast-feed experiment (~12 min, live sensor value pushed every 3 s) ---");
+        Log("--- WATCH: the DeepCool BOOT ANIMATION is the failure; number updates are expected ---");
+
+        for (int i = 0; i < 20; i++) display.SendRgbFrame(SplashFrame.Frame);   // panel awake
+        sensors.Sample();
+        int t0 = Math.Max(0, (int)Math.Round(sensors.CpuTempC));
+        display.SendZenIdle(t0);
+        Log($"[{DateTime.Now:HH:mm:ss}] zen entered with live temp {t0}; pushing sensor value every 3 s");
+
+        var tEndFast = DateTime.Now.AddMinutes(12);
+        int sent = 0;
+        while (DateTime.Now < tEndFast)
+        {
+            Thread.Sleep(3000);
+            sensors.Sample();
+            int t = Math.Max(0, (int)Math.Round(sensors.CpuTempC));
+            display.SendZenIdle(t);
+            sent++;
+            if (sent % 20 == 0) Log($"[{DateTime.Now:HH:mm:ss}] {sent} pushes sent (last value {t})");
+        }
+
+        Log($"experiment done — {sent} pushes over 12 min. Report: any boot animation?");
+        display.Disconnect();
+        return;
+    }
+
+    var zenQuick = args.Any(a => string.Equals(a, "zenquick", StringComparison.OrdinalIgnoreCase));
+    if (zenQuick)
+    {
+        Log("--- MODE: zen quick test (1 min, live value pushed every 1 s) ---");
+        Log("--- WATCH THE PANEL for the whole minute ---");
+
+        for (int i = 0; i < 20; i++) display.SendRgbFrame(SplashFrame.Frame);   // panel awake
+        sensors.Sample();
+        int tq = Math.Max(0, (int)Math.Round(sensors.CpuTempC));
+        display.SendZenIdle(tq);
+        Log($"[{DateTime.Now:HH:mm:ss}] zen entered ({tq}°); pushing every 1 s for 60 s");
+
+        for (int i = 1; i <= 60; i++)
+        {
+            Thread.Sleep(1000);
+            sensors.Sample();
+            int t = Math.Max(0, (int)Math.Round(sensors.CpuTempC));
+            display.SendZenIdle(t);
+            Log($"[{DateTime.Now:HH:mm:ss}] push {i:00}: {t}°");
+        }
+
+        Log("quick test done — panel left in zen. What did you see?");
         display.Disconnect();
         return;
     }
